@@ -246,7 +246,7 @@ mod tests {
             IrrepType::Vector { dim: 2 },
             vec![8, 6],
         );
-        let input = random_vector(4);
+        let input = crate::core::random_vector(4);
         let output = net.forward(&input);
         assert_eq!(output.nrows(), 2);
     }
