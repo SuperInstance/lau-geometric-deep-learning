@@ -1,32 +1,37 @@
 # lau-geometric-deep-learning
 
-**Geometric Deep Learning framework — 5 symmetries applied to agent systems.** Permutation, translation, rotation, scale, and time equivariance with spectral and spatial graph filters, gauge-equivariant layers, and group convolutions.
+**Bronstein et al.'s Geometric Deep Learning framework — the 5 symmetries applied to agent systems.**
 
-132 tests · MIT license · `nalgebra` + `serde`
+Geometric deep learning extends convolutional networks to non-Euclidean domains (graphs, manifolds, groups) by enforcing equivariance: if you transform the input by a symmetry, the output transforms the same way. This crate implements permutation, translation, rotation, scale, time, and gauge equivariance for agent feature processing.
+
+132 tests · MIT license · pure Rust · zero unsafe
 
 ---
 
 ## What This Does
 
-This crate implements the Bronstein et al. Geometric Deep Learning blueprint in Rust, targeting **agent systems on graphs**. An agent system is a set of agents with features, connected by a graph. The core question: *how do you build neural network layers that respect the symmetries of your data?*
-
-The five symmetries implemented:
-
-1. **Permutation equivariance** — agent order doesn't matter (Deep Sets, Set Transformers)
-2. **Translation equivariance** — shift-invariant features via relative coordinates and circular convolution
-3. **Rotation equivariance** — SO(2)/SO(3) equivariant features via invariant distances and angles
-4. **Scale equivariance** — multi-resolution features via normalization and log-scale
-5. **Time equivariance** — temporal shift equivariance via causal convolution and recurrent layers
-
-Plus: spectral graph filters (Chebyshev + exact eigendecomposition), spatial message passing (MPNN, GAT-like attention), gauge-equivariant layers with parallel transport, group convolution on finite groups (cyclic Z_n, dihedral D_n, symmetric S_n), and universal approximation theory.
+| Module | Symmetry | What you get |
+|---|---|---|
+| `core` | Framework foundations | `GroupAction` trait, `EquivariantLayer` trait, `AgentFeatures`, `AgentGraph` |
+| `permutation` | Agent order doesn't matter | Deep Sets (φ/ρ architecture), permutation check, set aggregation |
+| `translation` | Shift-invariant features | Weight-shared linear layers, circular convolution |
+| `rotation` | SO(n) equivariance | 2D/3D rotation actions, rotation-invariant features (distances, angles) |
+| `scale` | Multi-resolution features | Normalization, log-scale, multi-scale processing |
+| `time_equiv` | Temporal shift equivariance | Circular shift, temporal convolution |
+| `spectral` | Graph Fourier domain | Chebyshev spectral filters, low-pass / high-pass / band-pass |
+| `spatial` | Message passing on graphs | MPNN layers with sum/mean/max aggregation |
+| `gauge` | Local coordinate changes | Per-agent gauge matrices, gauge-equivariant layers |
+| `group_conv` | General group convolution | Cyclic and dihedral groups, group-theoretic convolution |
+| `agent` | Unified equivariant model | `EquivariantAgentModel` combining all symmetries |
+| `universal` | Universal approximation | Deep Sets as universal approximators for permutation-equivariant functions |
 
 ---
 
 ## Key Idea
 
-**Equivariance**: A function f is equivariant to a symmetry group G if f(g·x) = g·f(x) for all g ∈ G. If you permute the agents, the output permutes the same way. If you rotate the configuration, the output rotates too.
+> A function f is **equivariant** to a group G if f(g · x) = g · f(x) for all g ∈ G. By building this constraint into the architecture, you get generalization for free — the network cannot learn to depend on things that the symmetry says shouldn't matter.
 
-This isn't just mathematical elegance — it's a **strong inductive bias** that dramatically reduces the function space the network needs to search, giving better generalization with less data.
+For agent systems, the most important symmetry is **permutation**: agents have no canonical ordering. A Deep Set (φ network + aggregation + ρ network) is the universal permutation-equivariant architecture. On top of that, you can add translation equivariance (agents on a lattice), rotation equivariance (agents in physical space), scale equivariance (multi-resolution), and gauge equivariance (features in local coordinate systems).
 
 ---
 
@@ -34,213 +39,224 @@ This isn't just mathematical elegance — it's a **strong inductive bias** that 
 
 ```toml
 [dependencies]
-lau-geometric-deep-learning = "0.1.0"
+lau-geometric-deep-learning = { git = "https://github.com/SuperInstance/lau-geometric-deep-learning" }
 ```
 
-Dependencies: `nalgebra = "0.33"` (with serde + rand), `serde = "1"`, `serde_json = "1"`.
+Requires Rust 2021 edition. Dependencies: `nalgebra`, `serde`, `serde_json`.
 
 ---
 
 ## Quick Start
 
+### Permutation-equivariant processing (Deep Sets)
+
 ```rust
-use lau_geometric_deep_learning::prelude::*;
+use lau_geometric_deep_learning::{
+    AgentFeatures, DeepSetsLayer, Permutation, Aggregation,
+};
 use nalgebra::DMatrix;
 
-fn main() {
-    // Build a graph
-    let mut graph = AgentGraph::new(5);
-    graph.add_edge(0, 1, 1.0);
-    graph.add_edge(1, 2, 1.0);
-    graph.add_edge(2, 3, 1.0);
-    graph.add_edge(3, 4, 1.0);
+// 5 agents, 3 features each
+let features = AgentFeatures::new(DMatrix::from_element(5, 3, 1.0));
+let layer = DeepSetsLayer::new(3, 8, Aggregation::Sum);
+let output = layer.forward(&features);
+// Output is the same no matter how you reorder the agents
 
-    // Create features (5 agents × 8 features each)
-    let features = AgentFeatures::random(5, 8);
+let perm = Permutation::from_seed(5, 42);
+assert!(layer.check_equivariance(&perm, &features, 1e-6));
+```
 
-    // Build a permutation-equivariant model
-    let model = EquivariantModelBuilder::new()
-        .input_dim(8)
-        .hidden_dim(16)
-        .output_dim(4)
-        .num_layers(2)
-        .num_agents(5)
-        .add_symmetry(SymmetryType::Permutation)
-        .add_symmetry(SymmetryType::Scale)
-        .use_spatial(true)
-        .build();
+### Spectral graph filtering
 
-    // Forward pass
-    let output = model.forward(&graph, &features);
-    println!("Output: {} agents × {} features", output.n_agents(), output.feature_dim());
-}
+```rust
+use lau_geometric_deep_learning::{AgentGraph, SpectralFilter};
+
+// Build a graph with 10 agents
+let graph = AgentGraph::random(10, 0.3);
+let features = AgentFeatures::new(DMatrix::from_element(10, 4, 1.0));
+
+let lowpass = SpectralFilter::low_pass(5, 2.0);
+let smoothed = lowpass.apply_exact(&graph, &features.data());
+```
+
+### Full equivariant model
+
+```rust
+use lau_geometric_deep_learning::{GeometricModelConfig, EquivariantAgentModel, SymmetryType};
+
+let config = GeometricModelConfig {
+    input_dim: 4,
+    hidden_dim: 16,
+    output_dim: 2,
+    num_layers: 3,
+    symmetries: vec![SymmetryType::Permutation],
+    use_spatial: true,
+    use_spectral: false,
+};
+
+let model = EquivariantAgentModel::new(config);
+let features = AgentFeatures::new(DMatrix::new_random(8, 4));
+let output = model.forward(&features);
 ```
 
 ---
 
 ## API Reference
 
-### Core Types (`core`)
+### Core
 
-| Type | Description |
-|------|-------------|
-| `AgentGraph` | Graph structure: adjacency matrix, degree matrix, Laplacian, normalized Laplacian |
-| `AgentFeatures` | Feature matrix (n_agents × feature_dim) with permute, translate, scale operations |
-| `GeometricModelConfig` | Configuration: input/hidden/output dims, layers, symmetries, spectral/spatial flags |
-| `SymmetryType` | Enum: `Permutation`, `Translation{dim}`, `Rotation{dim}`, `Scale`, `Time`, `Gauge{fiber_dim}`, `GroupConv{order}` |
-| `GroupAction` | Trait: `act`, `inverse`, `compose`, `identity` |
-| `EquivariantLayer` | Trait: `forward`, `check_equivariance` |
+**`GroupAction`** trait — any symmetry element that can act on features:
+- `g.act(&features)` — apply the transformation.
+- `g.inverse()` — inverse element.
+- `g.compose(&other)` — group multiplication.
+- `G::identity()` — the identity element.
 
-**`AgentGraph`** methods:
-- `new(n)`, `fully_connected(n)`, `ring(n)`, `knn(positions, k)`
-- `add_edge(i, j, w)`, `neighbors(i)`, `num_edges()`, `is_connected()`
-- `degree_matrix()`, `laplacian()`, `normalized_laplacian()`
+**`EquivariantLayer`** trait — a layer that commutes with a group:
+- `layer.forward(&features)` — standard forward pass.
+- `layer.check_equivariance(&g, &features, tol)` — verify f(g·x) = g·f(x).
 
-### Permutation Equivariance (`permutation`)
+**`AgentFeatures`** — feature matrix (n_agents × feature_dim):
+- `AgentFeatures::new(data)` — from a `DMatrix<f64>`.
+- `features.n_agents()` / `features.feature_dim()`.
+- `features.data()` — access the underlying matrix.
 
-| Type | Description |
-|------|-------------|
-| `Permutation` | Group element: `new(perm)`, `identity(n)`, `from_seed(n, seed)`, `inverse()`, `compose()`, `to_matrix()` |
-| `DeepSetsLayer` | φ-ρ architecture with Sum/Mean/Max aggregation |
-| `SetTransformerLayer` | Attention-based permutation equivariant layer |
-| `Aggregation` | Enum: `Sum`, `Mean`, `Max` |
+**`AgentGraph`** — adjacency structure for agents:
+- `AgentGraph::random(n, edge_prob)` — Erdős–Rényi.
+- `graph.adjacency_matrix()` / `graph.degree_matrix()`.
+- `graph.normalized_laplacian()` — for spectral methods.
 
-| Function | Description |
-|----------|-------------|
-| `check_permutation_equivariance(f, features, perm, tol)` | Verify equivariance of arbitrary function |
+**`SymmetryType`** — enum: `Permutation`, `Translation { dim }`, `Rotation { dim }`, `Scale`, `Time`, `Gauge { fiber_dim }`, `GroupConv { order }`.
 
-### Translation Equivariance (`translation`)
+### Permutation
 
-| Type | Description |
-|------|-------------|
-| `Translation` | Shift vector group element |
-| `TranslationEquivLayer` | Uses relative coordinates (centroid-subtracted) or pairwise differences |
-| `CircularConvLayer` | 1D circular convolution for ring-structured agents |
+**`Permutation`** — a permutation of agent indices:
+- `Permutation::new(perm)` — from explicit index list.
+- `Permutation::identity(n)` — the identity.
+- `Permutation::from_seed(n, seed)` — deterministic random.
+- `p.inverse()` / `p.compose(&other)`.
+- `p.apply_to_matrix(&m)` — permute rows.
 
-### Rotation Equivariance (`rotation`)
+**`DeepSetsLayer`** — the universal permutation-equivariant layer:
+- `DeepSetsLayer::new(input_dim, output_dim, aggregation)`.
+- Aggregation: `Sum`, `Mean`, `Max`.
+- `layer.forward(&features)` — φ network, aggregate, ρ network.
 
-| Type | Description |
-|------|-------------|
-| `RotationAction` | Enum: `Rot2{angle}`, `Rot3{matrix}` — SO(2)/SO(3) group element |
-| `RotationInvariantFeatures` | Computes distances, angles, cos(angle) — rotation-invariant by construction |
-| `SONEquivariantLayer` | SO(n)-equivariant layer using scalar invariants |
+**`Aggregation`** — `Sum`, `Mean`, `Max`.
 
-### Scale Equivariance (`scale`)
+### Translation
 
-| Type | Description |
-|------|-------------|
-| `ScaleAction` | Scalar multiplication group element |
-| `ScaleEquivLayer` | Normalize / LogScale / MultiScale modes |
-| `ScaleMode` | `Normalize` (L2), `LogScale` (log|x|), `MultiScale{scales}` |
-| `MultiResolutionPool` | Pool features at multiple scales, concatenate |
+**`Translation`** — a shift in feature space:
+- `Translation::new(shift)` — from a `DVector<f64>`.
+- `Translation::zero(dim)` — no shift.
+- Implements `GroupAction`: adds shift to each row.
 
-### Time Equivariance (`time_equiv`)
+**`TranslationEquivLinear`** — weight-shared linear layer:
+- `TranslationEquivLinear::new(input_dim, output_dim)`.
+- `layer.forward(&features)` — same weights applied to every agent.
 
-| Type | Description |
-|------|-------------|
-| `TimeShift` | Cyclic temporal shift group element |
-| `TemporalConvLayer` | Causal 1D convolution |
-| `TemporalRecurrentLayer` | Recurrent layer with forward and reverse modes |
+### Rotation
 
-| Function | Description |
-|----------|-------------|
-| `temporal_differences(ts, order)` | Compute nth-order temporal differences |
-| `running_average(ts, window)` | Causal running average smoothing |
+**`RotationAction`** — 2D or 3D rotation:
+- `RotationAction::rot2(angle)` — 2D rotation by angle.
+- `RotationAction::rot3_from_axis_angle(&axis, angle)` — 3D axis-angle.
+- `r.rotate_positions(&positions)` — apply to position matrix.
 
-### Spectral Filters (`spectral`)
+**`RotationInvariantFeatures`** — extract rotation-invariant quantities:
+- Pairwise distances.
+- Angles between agent triplets.
 
-| Type | Description |
-|------|-------------|
-| `SpectralFilter` | Polynomial filter in graph frequency domain |
-| `GraphFourier` | Static: `transform`, `inverse_transform`, `frequencies`, `spectral_pool` |
+### Scale
 
-`SpectralFilter` methods:
-- `new(order)`, `low_pass(order, cutoff)`, `high_pass(order, cutoff)`
-- `apply_exact(graph, features)` — via full eigendecomposition: U·g(Λ)·Uᵀ·X
-- `apply_chebyshev(graph, features)` — via Chebyshev polynomial approximation (faster)
-- `evaluate(λ)` — evaluate polynomial filter at eigenvalue
+**`ScaleAction`** — a scaling factor:
+- `ScaleAction::new(factor)`.
+- Implements `GroupAction`: multiplies all features by factor.
 
-### Spatial Filters (`spatial`)
+**`ScaleEquivLayer`** — scale-equivariant layer:
+- `ScaleMode::Normalize` — normalize by L2 norm.
+- `ScaleMode::LogScale` — log-transform.
+- `ScaleMode::MultiScale { scales }` — process at multiple scales.
 
-| Type | Description |
-|------|-------------|
-| `MessagePassingLayer` | MPNN with message/aggregate/update functions |
-| `MessageAggregation` | `Sum`, `Mean`, `Max` |
-| `GraphConvLayer` | Graph convolution with optional GAT-like attention |
-| `GNNScheme` | Multi-layer GNN stack with readout (sum/attention) |
+### Time
 
-### Gauge Equivariance (`gauge`)
+**`TimeShift`** — circular shift of the time axis:
+- `TimeShift::new(steps)` — shift by `steps` positions.
+- Implements `GroupAction`: circular index permutation.
 
-| Type | Description |
-|------|-------------|
-| `GaugeTransformation` | Per-agent orthogonal gauge matrices; `identity(n, fd)`, `random_orthogonal(n, fd, seed)` |
-| `GaugeEquivLayer` | Gauge-equivariant layer using parallel transport on graph |
-| `Connection` | Parallel transport matrices; `trivial(n, fd)`, `holonomy(cycle)` |
+**`TemporalConvLayer`** — temporal convolution (shift-equivariant):
+- `TemporalConvLayer::new(kernel_size, input_channels, output_channels)`.
+- `layer.forward(&features)` — 1D convolution with circular padding.
 
-### Group Convolution (`group_conv`)
+### Spectral
 
-| Type | Description |
-|------|-------------|
-| `FiniteGroup` | Group via multiplication table; `cyclic(n)`, `dihedral(n)`, `symmetric(n)` |
-| `GroupConvLayer` | G-equivariant convolution: (f∗k)(x) = Σ_y f(y)·k(y⁻¹x) |
-| `LiftingLayer` | Lifts scalar features to regular representation |
+**`SpectralFilter`** — convolution in the graph Fourier domain:
+- `SpectralFilter::new(order)` — random Chebyshev coefficients.
+- `SpectralFilter::low_pass(order, cutoff)` — smoothing filter.
+- `SpectralFilter::high_pass(order, cutoff)` — edge detection.
+- `SpectralFilter::band_pass(order, low, high)` — band-pass.
+- `filter.apply_exact(&graph, &features)` — full eigendecomposition.
+- `filter.apply_chebyshev(&graph, &features)` — Chebyshev approximation.
 
-### Unified Model (`agent`)
+### Spatial
 
-| Type | Description |
-|------|-------------|
-| `EquivariantAgentModel` | Full pipeline combining all equivariant layers |
-| `EquivariantModelBuilder` | Builder pattern for configuring models |
+**`MessagePassingLayer`** — message-passing neural network:
+- `MessagePassingLayer::new(input_dim, output_dim, aggregation)`.
+- `layer.message(&h_i, &h_j)` — compute message between agents.
+- `layer.aggregate(&messages)` — combine neighbor messages.
+- `layer.update(&h, &aggregated)` — update agent state.
+- `layer.forward(&graph, &features)` — full MPNN step.
 
-`EquivariantAgentModel` methods:
-- `new(config)` — construct from config
-- `forward(graph, features)` — full forward pass
-- `extract_features(graph, features)` — returns DMatrix
-- `verify_equivariance(graph, features, tol)` — check permutation equivariance
+### Gauge
 
-### Universal Approximation (`universal`)
+**`GaugeTransformation`** — per-agent coordinate change:
+- `GaugeTransformation::identity(n_agents, fiber_dim)`.
+- `GaugeTransformation::random_orthogonal(n_agents, fiber_dim, seed)`.
 
-| Type | Description |
-|------|-------------|
-| `UniversalApproximator` | Deep Sets stack with configurable depth |
-| `IrrepType` | `Scalar`, `Vector{dim}` — irreducible representation types |
-| `ClebschGordanNet` | Irrep composition network |
+**`GaugeEquivLayer`** — gauge-equivariant processing:
+- `layer.forward(&features, &graph)` — parallel transport + linear + inverse transport.
+
+### Group Convolution
+
+**`FiniteGroup`** — a group by its multiplication table:
+- `FiniteGroup::cyclic(n)` — Z_n.
+- `FiniteGroup::dihedral(n)` — D_n (rotations + reflections of regular n-gon).
+
+**`GroupConvLayer`** — general G-equivariant convolution:
+- `GroupConvLayer::new(group, input_channels, output_channels)`.
+- `layer.forward(&features)` — group convolution (f * g)(x) = Σ_{y∈G} f(y) g(y⁻¹x).
+
+### Agent Model
+
+**`EquivariantAgentModel`** — unified model combining selected symmetries:
+- `EquivariantAgentModel::new(config)`.
+- `model.forward(&features)` — full forward pass through all selected layers.
+- `model.forward_with_graph(&features, &graph)` — for spatial/spectral layers.
+
+**`GeometricModelConfig`**:
+- `input_dim`, `hidden_dim`, `output_dim`, `num_layers`.
+- `symmetries: Vec<SymmetryType>` — which equivariances to enforce.
+- `use_spatial` — enable message passing.
+- `use_spectral` — enable spectral filters.
+
+### Universal Approximation
+
+**`UniversalApproximator`** — deep permutation-equivariant network:
+- `UniversalApproximator::new(input_dim, hidden_dim, output_dim, depth)`.
+- `approx.forward(&features)`.
+- `approx.empirical_error(&features, &target)` — measure approximation quality.
 
 ---
 
 ## How It Works
 
-### Architecture
+1. **Define the symmetry**: Choose which group(s) your data respects — permutation (no canonical ordering), translation (shift-invariant), rotation (orientation-invariant), etc.
 
-```
-AgentGraph ──→ EquivariantModelBuilder ──→ EquivariantAgentModel
-                    │                          │
-                    ├─ SymmetryType ────────┐  │
-                    │  (Permutation)        │  ├─ permutation_layers: DeepSetsLayer
-                    │  (Translation)        │  ├─ message_passing_layers: MPNN
-                    │  (Rotation)           │  ├─ spectral_filters: Chebyshev/exact
-                    │  (Scale)              │  ├─ scale_layer: ScaleEquivLayer
-                    │  (Gauge)              │  ├─ rotation_features: invariants
-                    │  (GroupConv)          │  └─ gauge_layer: GaugeEquivLayer
-                    └─ use_spectral         │
-                       use_spatial          │
-```
+2. **Build equivariant layers**: Each layer type enforces its symmetry by construction. A Deep Sets layer aggregates across all agents identically; a spectral filter convolves with the graph Laplacian eigenvectors; a temporal convolution uses circular padding.
 
-Each equivariant layer satisfies: f(g·x) = g·f(x) for its symmetry group G.
+3. **Verify equivariance**: Every layer implements `check_equivariance`, which directly tests f(g·x) ≈ g·f(x) numerically. Use this in tests to verify your architecture.
 
-### Key Algorithms
+4. **Compose layers**: Stack equivariant layers — the composition of equivariant maps is equivariant. The `EquivariantAgentModel` handles this automatically.
 
-**Deep Sets (permutation)**: φ transforms individual features, ρ transforms the aggregate: f(X) = ρ(Σᵢ φ(xᵢ))
-
-**Message Passing (spatial)**: For each node i: m_i = Σ_{j∈N(i)} MSG(h_i, h_j), h_i' = UPDATE(h_i, m_i)
-
-**Spectral Filtering**: Diagonalize Laplacian L = UΛUᵀ, apply polynomial g(Λ), reconstruct: U·g(Λ)·Uᵀ·X
-
-**Chebyshev Approximation**: Avoid eigendecomposition by computing T_k(L̃)·X recursively, scaling L to [-1,1]
-
-**Group Convolution**: On finite group G with |G|=n: (f∗k)(x) = Σ_{y∈G} f(y)·k(y⁻¹x), automatically G-equivariant
-
-**Gauge Equivariance**: Features live in a fiber bundle. Gauge transformation applies per-node orthogonal matrices. Parallel transport moves features between nodes via connection matrices.
+5. **Process agent data**: Feed agent features through the model. The output respects all specified symmetries regardless of the learned weights.
 
 ---
 
@@ -248,45 +264,31 @@ Each equivariant layer satisfies: f(g·x) = g·f(x) for its symmetry group G.
 
 ### Equivariance
 
-A function f: X → Y is **G-equivariant** if f(g·x) = g·f(x) for all g ∈ G.
+A function f: X → Y is **G-equivariant** if f(g · x) = g · f(x) for all g ∈ G. If g · f(x) = f(x) (the output is unchanged), f is **G-invariant**. Equivariance is the natural notion for intermediate layers; invariance is for final outputs.
 
-Special case: f is **G-invariant** if f(g·x) = f(x) (Y has trivial G-action).
+### Deep Sets (Permutation Equivariance)
 
-### Graph Laplacian
-
-L = D - A (combinatorial), L_norm = I - D^{-1/2}AD^{-1/2} (normalized)
-
-Eigenvalues 0 = λ₁ ≤ λ₂ ≤ ... ≤ λₙ encode graph structure. λ₂ (algebraic connectivity) measures how connected the graph is.
+**Theorem** (Zaheer et al., 2017): Any continuous permutation-equivariant function f: ℝ^{n×d} → ℝ^{n×d'} can be approximated by f(X)ᵢ = ρ(φ(xᵢ), AGG_{j} φ(xⱼ)) where φ, ρ are neural networks and AGG is sum, mean, or max.
 
 ### Graph Fourier Transform
 
-For L = UΛUᵀ:
+For a graph with Laplacian L = UΛUᵀ, the **graph Fourier transform** of a signal x is x̂ = Uᵀx. Convolution in the spectral domain is ĥ ⊙ x̂ (element-wise multiplication). Spectral filters learn coefficients in the eigenbasis.
 
-- Forward: f̂ = Uᵀf (decompose into graph frequencies)
-- Inverse: f = Uf̂ (reconstruct)
-- Filtering: f_filtered = U·g(Λ)·Uᵀ·f
+### Chebyshev Approximation
 
-### Chebyshev Polynomials
+Computing the full eigendecomposition is O(n³). Chebyshev spectral filters approximate g(Λ) ≈ Σₖ θₖ Tₖ(Λ̃) where Tₖ are Chebyshev polynomials and Λ̃ = 2Λ/λ_max − I. This costs O(k|E|) — linear in edges.
 
-T₀(x) = 1, T₁(x) = x, Tₖ(x) = 2x·Tₖ₋₁(x) - Tₖ₋₂(x)
+### Message Passing
 
-Any polynomial filter g(λ) can be approximated by Σₖ cₖTₖ(λ̃) where λ̃ is the scaled eigenvalue.
+An MPNN layer updates each node by: hᵢ' = UPDATE(hᵢ, AGG_{j∈N(i)} MESSAGE(hᵢ, hⱼ)). This is permutation-equivariant by construction (AGG is symmetric). Universal for functions on graphs with sufficient depth.
 
-### Deep Sets Universality
+### Gauge Equivariance
 
-Any continuous permutation-invariant function on sets can be decomposed as ρ(Σᵢ φ(xᵢ)) for suitable φ, ρ (Zaheer et al., 2017). This crate implements this as the `UniversalApproximator`.
+On a manifold with local frames (gauges) at each point, a feature vector v transforms as v → gᵢv when the gauge at point i changes. A gauge-equivariant layer applies: gᵢ⁻¹ L (gᵢ vᵢ) — transform to a canonical frame, apply the linear map, transform back. This ensures the output doesn't depend on the arbitrary choice of local coordinates.
 
-### Group Convolution on Finite Groups
+### Group Convolution
 
-For finite group G with elements {g₀, ..., g_{n-1}}:
-
-(f ∗ k)(x) = Σᵢ f(gᵢ) · k(gᵢ⁻¹x)
-
-This is automatically G-equivariant: (f∗k)(hx) = h·(f∗k)(x).
-
-### Gauge Theory on Graphs
-
-A **connection** on a graph assigns a linear map (transport matrix) to each edge. **Holonomy** around a cycle is the product of transport matrices. Trivial connection → identity holonomy (flat geometry). Non-trivial connection → curvature.
+For a finite group G, the convolution (f * ψ)(x) = Σ_{y∈G} f(y) ψ(y⁻¹x) is G-equivariant. This generalizes standard convolution (translation group) to any group with a known multiplication table.
 
 ---
 
